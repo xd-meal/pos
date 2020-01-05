@@ -1,10 +1,25 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:wakelock/wakelock.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'clock_button.dart';
+import 'settings.dart';
 import 'dart:typed_data';
 import 'dart:async';
 import 'package:usb_serial/usb_serial.dart';
 import 'package:usb_serial/transaction.dart';
 
-void main() => runApp(MyApp());
+void main() => runApp(Loader());
+
+class Loader extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    Wakelock.enable();
+    return MaterialApp(
+      home: MyApp(),
+    );
+  }
+}
 
 class MyApp extends StatefulWidget {
   @override
@@ -12,13 +27,17 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
+  int tapCount = 0;
+  String authKey = '';
   UsbPort _port;
-  String _status = "Idle";
+  String _status = "就绪";
   String _serialData = "";
-  List<Widget> _ports = [];
   StreamSubscription<String> _subscription;
   Transaction<String> _transaction;
   int _deviceId;
+
+  RegExp keySetter = new RegExp(r"UG(.*)XG");
+  RegExp tokenReg = new RegExp(r"XY(.*)XZ");
 
   Future<bool> _connectTo(device) async {
     if (_subscription != null) {
@@ -39,7 +58,7 @@ class _MyAppState extends State<MyApp> {
     if (device == null) {
       _deviceId = null;
       setState(() {
-        _status = "Disconnected";
+        _status = "与扫码器断开连接";
       });
       return true;
     }
@@ -47,7 +66,7 @@ class _MyAppState extends State<MyApp> {
     _port = await device.create();
     if (!await _port.open()) {
       setState(() {
-        _status = "Failed to open port";
+        _status = "启动扫码器失败";
       });
       return false;
     }
@@ -62,45 +81,67 @@ class _MyAppState extends State<MyApp> {
         _port.inputStream, Uint8List.fromList([13, 10]));
 
     _subscription = _transaction.stream.listen((String line) {
+      if (keySetter.hasMatch(line)) {
+        String key = line.substring(2, line.length - 2);
+        setConfigKey(key);
+      } else if (tokenReg.hasMatch(line)) {
+        String token = line.substring(2, line.length - 2);
+        // TODO:Send ajax from here
+        _serialData = '此处应有取参请求发出(叹气';
+      }
       setState(() {
-        _serialData = line;
+        // _serialData = line;
       });
     });
 
     setState(() {
-      _status = "Connected";
+      _status = "已连接到扫码器";
     });
     return true;
   }
 
   void _getPorts() async {
-    _ports = [];
     List<UsbDevice> devices = await UsbSerial.listDevices();
-
-    devices.forEach((device) {
-      _ports.add(ListTile(
-          leading: Icon(Icons.usb),
-          title: Text(device.productName),
-          subtitle: Text(device.manufacturerName),
-          trailing: RaisedButton(
-            child:
-                Text(_deviceId == device.deviceId ? "Disconnect" : "Connect"),
-            onPressed: () {
-              _connectTo(_deviceId == device.deviceId ? null : device)
-                  .then((res) {
-                _getPorts();
-              });
-            },
-          )));
-    });
+    _connectTo(devices[0]);
 
     setState(() {});
+  }
+
+  void fetchConfigKeys() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    authKey = (prefs.getInt('authKey') ?? '');
+  }
+
+  void setConfigKey(String key) async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    authKey = key;
+    await prefs.setString('authKey', key);
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        // return object of type Dialog
+        return AlertDialog(
+          title: new Text("成功设置参数"),
+          content: new Text("已设置服务器通讯校验码"),
+          actions: <Widget>[
+            // usually buttons at the bottom of the dialog
+            new FlatButton(
+              child: new Text("关闭"),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
   void initState() {
     super.initState();
-
+    fetchConfigKeys();
+    SystemChrome.setEnabledSystemUIOverlays([]);
     UsbSerial.usbEventStream.listen((UsbEvent event) {
       _getPorts();
     });
@@ -110,155 +151,56 @@ class _MyAppState extends State<MyApp> {
 
   @override
   void dispose() {
-    super.dispose();
     _connectTo(null);
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-        home: Scaffold(
-      appBar: AppBar(),
-      body: Center(
-        child: Column(children: <Widget>[
-          Text('device list: ' + _ports.length.toString(),
-              style: Theme.of(context).textTheme.title),
-          ..._ports,
-          Text('Status: $_status\n'),
-          GridView.count(
-            primary: false,
-            padding: const EdgeInsets.all(20),
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-            shrinkWrap: true,
-            crossAxisCount: 4,
-            children: <Widget>[
-              RaisedButton(
-                child: Text("Start Read"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x01, 0x01, 0x00, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("Stop Read"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x01, 0x01, 0x01, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("LED Off"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x03, 0x01, 0x01, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("LED White"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x03, 0x01, 0x00, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("LED Red"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x03, 0x01, 0x02, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("LED Cyan"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x03, 0x01, 0x04, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("LED Magenta"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x03, 0x01, 0x05, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("LED Green"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x03, 0x01, 0x06, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("LED Blue"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x03, 0x01, 0x07, 0xAB, 0xCD]));
-                      },
-              ),
-              RaisedButton(
-                child: Text("LED Yellow"),
-                onPressed: _port == null
-                    ? null
-                    : () async {
-                        if (_port == null) {
-                          return;
-                        }
-                        await _port.write(Uint8List.fromList(
-                            [0x7E, 0x00, 0x03, 0x01, 0x03, 0xAB, 0xCD]));
-                      },
-              ),
-            ],
-          ),
-          Text("Read result", style: Theme.of(context).textTheme.title),
-          Text(_serialData),
-        ]),
+    return new Scaffold(
+      backgroundColor: Color(0xFF00000000),
+      body: Container(
+        constraints: BoxConstraints.expand(
+          height: Theme.of(context).textTheme.display1.height,
+        ),
+        padding: EdgeInsets.only(bottom: 50),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Expanded(
+              child: Container(),
+            ),
+            Text(
+              _serialData,
+              style: TextStyle(fontSize: 40, color: Colors.white),
+            ),
+            Expanded(
+              child: Container(),
+            ),
+            Text(
+              // _status,
+              authKey,
+              style: TextStyle(fontSize: 40, color: Colors.white),
+            ),
+            ClockButton(
+              label: _serialData,
+              buttonType: ButtonType.FlatButton,
+              color: Colors.black,
+              activeTextStyle: TextStyle(color: Colors.white, fontSize: 60),
+              disabledTextStyle: TextStyle(color: Colors.white, fontSize: 60),
+              onPressed: () {
+                this.tapCount++;
+                if (this.tapCount > 0) {
+                  this.tapCount = 0;
+                  Navigator.push(context,
+                      MaterialPageRoute(builder: (context) => SettingsPage()));
+                }
+              },
+            ),
+          ],
+        ),
       ),
-    ));
+    );
   }
 }
