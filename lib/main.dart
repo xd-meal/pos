@@ -87,7 +87,7 @@ class _MyAppState extends State<MyApp> {
       } else if (tokenReg.hasMatch(line)) {
         String token = line.substring(2, line.length - 2);
         // TODO:Send ajax from here
-        _serialData = '此处应有取参请求发出(叹气';
+        _serialData = '此处应有取餐请求发出(叹气';
       }
       setState(() {
         // _serialData = line;
